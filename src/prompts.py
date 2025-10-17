@@ -16,9 +16,12 @@ Use the search_web tool when you need current information about:
 Tool capabilities:
 - queries: Pass multiple search queries to search them all at once
 - backend: Choose from 'duckduckgo' (default), 'tavily', or 'serp'
+  * duckduckgo: Free but may be rate-limited
+  * tavily: Recommended for best results (requires API key)
+  * serp: Google results (requires API key)
 - num_results: Specify how many results per query (1-20, default: 5)
 
-Example: search multiple queries with tavily backend for 3 results each.
+If DuckDuckGo is rate-limited, try using 'tavily' or 'serp' backend instead.
 
 Be concise and accurate in your responses."""
 

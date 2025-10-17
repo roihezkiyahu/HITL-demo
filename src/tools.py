@@ -2,6 +2,10 @@ import os
 import json
 from typing import Literal
 from langchain_core.tools import tool
+from serpapi import GoogleSearch
+from tavily import TavilyClient
+from langchain_community.tools import DuckDuckGoSearchRun
+import time
 
 
 def _search_serp(queries: list[str], num_results: int) -> str:
@@ -14,7 +18,6 @@ def _search_serp(queries: list[str], num_results: int) -> str:
     Returns:
         str: Formatted search results
     """
-    from serpapi import GoogleSearch
     
     api_key = os.getenv("SERP_API_KEY")
     if not api_key:
@@ -52,7 +55,6 @@ def _search_tavily(queries: list[str], num_results: int) -> str:
     Returns:
         str: Formatted search results
     """
-    from tavily import TavilyClient
     
     api_key = os.getenv("TAVILY_API_KEY")
     if not api_key:
@@ -85,17 +87,26 @@ def _search_duckduckgo(queries: list[str], num_results: int) -> str:
     Returns:
         str: Formatted search results
     """
-    from langchain_community.tools import DuckDuckGoSearchRun
     
     search = DuckDuckGoSearchRun()
     all_results = []
     
     for query in queries:
-        results = search.run(query)
-        all_results.append({
-            "query": query,
-            "results": results
-        })
+        try:
+            results = search.run(query)
+            all_results.append({
+                "query": query,
+                "results": results
+            })
+            time.sleep(1)
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "ratelimit" in error_msg or "blocked" in error_msg or "429" in error_msg:
+                return "ERROR: DuckDuckGo rate limited. Please try again later or use 'tavily' or 'serp' backend."
+            all_results.append({
+                "query": query,
+                "error": str(e)
+            })
     
     return json.dumps(all_results, indent=2)
 

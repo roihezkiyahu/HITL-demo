@@ -1,8 +1,9 @@
 from typing import Literal
 from langgraph.types import interrupt
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langgraph.graph import END
 from src.schemas import AgentState
-
+from src.prompts import get_system_prompt
 
 def agent_node(state: AgentState, model):
     """Calls the language model with current messages.
@@ -17,10 +18,19 @@ def agent_node(state: AgentState, model):
     messages = state["messages"]
     
     if not messages or not isinstance(messages[0], SystemMessage):
-        from prompts import get_system_prompt
         messages = [SystemMessage(content=get_system_prompt())] + messages
     
     response = model.invoke(messages)
+    
+    if not response.content and not getattr(response, 'tool_calls', None):
+        from langchain_core.messages import ToolMessage
+        has_tool_message = any(isinstance(msg, ToolMessage) for msg in messages)
+        
+        if has_tool_message:
+            prompt_message = HumanMessage(content="Please provide a summary of the search results above.")
+            retry_response = model.invoke(messages + [prompt_message])
+            return {"messages": [response, prompt_message, retry_response], "approved": False}
+    
     return {"messages": [response], "approved": False}
 
 
@@ -33,7 +43,6 @@ def should_continue(state: AgentState) -> str:
     Returns:
         str: Next node ("approval" or END)
     """
-    from langgraph.graph import END
     
     messages = state["messages"]
     last_message = messages[-1]
