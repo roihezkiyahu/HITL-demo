@@ -1,0 +1,5 @@
+.env
+.qodo/
+cursor_summaries/
+__pycache__/
+hitl/
