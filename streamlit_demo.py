@@ -134,7 +134,7 @@ def handle_approval(approved: bool, feedback: str = ""):
     
     try:
         result = st.session_state.agent.invoke(
-            Command(update=approval_response, resume=approval_response),
+            Command(resume=approval_response),
             config=st.session_state.agent_config
         )
         

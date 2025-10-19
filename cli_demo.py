@@ -94,7 +94,7 @@ def process_interrupts(agent, result, config):
             approval_response = handle_tool_approval(interrupt_data)
             result.pop("__interrupt__")
             result = agent.invoke(
-                Command(update=approval_response, resume=approval_response),
+                Command(resume=approval_response),
                 config=config
             )
         else:

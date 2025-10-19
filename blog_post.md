@@ -2,17 +2,21 @@
 
 *How to build AI agents that don't force you into binary yes/no decisions when the stakes are high*
 
+Your AI agent generates a tool call with the wrong parameters. You reject it. The conversation ends. Now you're back to square one, retyping your request and hoping it gets it right this time.
+
+There has to be a better way.
+
 ## Introduction: The Limitation of Single-Interrupt HITL
 
 Most Human-in-the-Loop (HITL) systems follow a simple pattern: an agent generates a tool call, pauses for human approval, and then either proceeds or stops. This works fine for straightforward approval scenarios, but it has a fundamental limitation.
 
 What happens when the human wants to say "try with different parameters"?
 
-In a typical single-interrupt system, rejection ends the conversation. The user has to start over from scratch, restating their intent and hoping the agent makes a better choice next time.
+In a typical single interrupt system, rejection ends the conversation. The user has to start over from scratch, restating their intent and hoping the agent makes a better choice next time.
 
-Consider a common scenario: you're building an AI agent that searches the web for information. The agent decides to call a search tool with `backend="serp"`, but you don't have a SERP API key configured. In a single-interrupt system, you reject the tool call, and the conversation ends.
+Consider a common scenario: you're building an AI agent that searches the web for information. The agent decides to call a search tool with `backend="serp"`, but you don't have a SERP API key configured. In a single interrupt system, you reject the tool call, and the conversation ends.
 
-There's no mechanism for the agent to adjust. No way to say "use DuckDuckGo instead" and have the agent regenerate its decision with that constraint.
+There's no mechanism for the agent to adjust.
 
 The problem becomes critical with consequential operations. An agent that deletes database records, modifies production files, or makes API calls with billing implications needs more than binary approve/reject. You need the ability to refine parameters, add constraints, or redirect the agent's approach without losing conversation context.
 
@@ -23,14 +27,12 @@ If there's still an issue, you reject again. And again. The loop persists until 
 For dangerous operations, this iterative refinement is essential.
 
 **What You'll Learn:**
-- Why single-interrupt HITL systems fail with destructive operations
+- Why single interrupt HITL systems fail with destructive operations
 - How to implement multi-turn approval loops in LangGraph
 - Managing state and conversation history across rejection cycles
-- Real code examples you can run today
+- Real code examples
 
-**Reading time:** 12 minutes | **Skill level:** Intermediate
-
-This article shows you how to build that pattern in LangGraph. We'll ground everything in a real, working implementation: a web search agent that requires human approval before any tool execution and allows unlimited rejection and retry cycles.
+This article shows how to build that pattern in LangGraph. We'll ground everything in a real, working implementation: a web search agent that requires human approval before any tool execution and allows unlimited rejection and retry cycles.
 
 ---
 
@@ -47,17 +49,12 @@ graph TD
     C -->|Approve| D["Execute Tool"]
     C -->|Reject| E["End"]
     D --> E
-    
-    style A fill:#1e88e5,stroke:#0d47a1,stroke-width:2px,color:#fff
-    style B fill:#fb8c00,stroke:#e65100,stroke-width:2px,color:#fff
-    style C fill:#8e24aa,stroke:#4a148c,stroke-width:2px,color:#fff
-    style D fill:#43a047,stroke:#1b5e20,stroke-width:2px,color:#fff
-    style E fill:#e53935,stroke:#b71c1c,stroke-width:2px,color:#fff
+
 ```
 
 The pattern is simple: pause the graph at a decision point, collect human input, then proceed or terminate.
 
-This works for scenarios like content moderation (should this post be deleted?) or cost estimation (do you authorize this $50 API call?).
+This works for scenarios like do you authorize to delete this post? or do you authorize this $50 API call?.
 
 But notice what happens if the human rejects: the conversation typically ends. If they want to retry with different parameters, they start over.
 
@@ -65,7 +62,7 @@ There's no mechanism for the agent to learn from the rejection and self-correct.
 
 ### The Multi-Turn Edit Loop Pattern
 
-Our implementation introduces a crucial change:
+Multi-turn edit implementation introduces a crucial change:
 
 ```mermaid
 graph TD
@@ -76,18 +73,12 @@ graph TD
     D --> F["Agent Processes<br/>Updated Context"]
     E --> F
     F --> A
-    
-    style A fill:#1e88e5,stroke:#0d47a1,stroke-width:3px,color:#fff
-    style B fill:#fb8c00,stroke:#e65100,stroke-width:2px,color:#fff
-    style C fill:#8e24aa,stroke:#4a148c,stroke-width:2px,color:#fff
-    style D fill:#e53935,stroke:#b71c1c,stroke-width:2px,color:#fff
-    style E fill:#43a047,stroke:#1b5e20,stroke-width:2px,color:#fff
-    style F fill:#fbc02d,stroke:#f57f17,stroke-width:2px,color:#000
+
 ```
 
 **Key difference:** rejection loops back to the agent, not to the user.
 
-The agent sees the rejection as a new human message in the conversation context and generates a revised tool call. The human approves or rejects again, creating an iterative refinement loop.
+The agent sees the rejection as a new human message in the conversation context and generates a revised tool call or abort tool calling completle. The point is that the next move is up to the agent based on the feedback. In case of a new tool call the human approves or rejects again, creating an iterative refinement loop.
 
 This approach has several benefits:
 - **Preserves conversation context** - nothing is lost between attempts
@@ -130,7 +121,7 @@ Three fields with clear responsibilities:
 - **approved** - Boolean flag for the approval status
 - **feedback** - Optional user guidance for rejections
 
-This simplicity is key. We don't need complex iteration counters or history tracking because the graph structure and message accumulation handle everything.
+We don't need complex history tracking because the graph structure and message accumulation handle everything.
 
 ---
 
@@ -138,7 +129,7 @@ This simplicity is key. We don't need complex iteration counters or history trac
 
 ### The Agent Node
 
-**Key Insight:** This node ensures the system message is always present and handles edge cases where the model needs prompting.
+This node ensures the system message is always present and handles edge cases where the model needs prompting.
 
 The agent node calls the language model with bound tools:
 
@@ -151,14 +142,6 @@ def agent_node(state: AgentState, model):
     
     response = model.invoke(messages)
     
-    if not response.content and not getattr(response, 'tool_calls', None):
-        has_tool_message = any(isinstance(msg, ToolMessage) for msg in messages)
-        
-        if has_tool_message:
-            prompt_message = HumanMessage(content="Please provide a summary of the search results above.")
-            retry_response = model.invoke(messages + [prompt_message])
-            return {"messages": [response, prompt_message, retry_response], "approved": False}
-    
     return {"messages": [response], "approved": False}
 ```
 
@@ -168,15 +151,13 @@ First, we ensure a system message is always present at the beginning. This keeps
 
 Then we call the model with the current conversation messages.
 
-The code handles an edge case where the model returns tool results but no content. This can happen when search results come back but the model hasn't summarized them yet. In that scenario, we prompt the model to provide a summary.
-
 The key point: all responses get appended to the state via the `add_messages` handler. The conversation history accumulates naturally with each node invocation.
 
 ### The Approval Node: Interrupting for Human Decision
 
-**Key Insight:** The `interrupt()` call pauses execution and waits for human input-this is the gateway that enables multi-turn loops.
+The `interrupt()` call pauses execution and waits for human input, this is the gateway that enables multi-turn loops.
 
-The approval node is where the multi-turn loop's pause mechanism lives:
+The approval node is where the multi-turn loops pause mechanism lives:
 
 ```python
 def human_approval_node(state: AgentState):
@@ -188,8 +169,7 @@ def human_approval_node(state: AgentState):
         for tool_call in last_message.tool_calls:
             tool_calls_info.append({
                 "name": tool_call.get("name"),
-                "args": tool_call.get("args", {}),
-                "id": tool_call.get("id")
+                "args": tool_call.get("args", {})
             })
         
         approval_data = interrupt({
@@ -205,17 +185,17 @@ def human_approval_node(state: AgentState):
     return {"approved": False, "feedback": ""}
 ```
 
-The `interrupt()` call from LangGraph pauses execution and sends data to the client (whether that's a CLI, web UI, or API).
+The `interrupt()` call from LangGraph pauses execution and sends data to the client (whether that is a CLI, web UI, or API).
 
 The client displays the tool calls and waits for human input. Once the human responds with approval status and optional feedback, that data gets captured and stored in state.
 
-This is the gateway: if approved, execution proceeds to the tools node. If rejected, execution goes to the rejection handler.
+The gateway: if approved, execution proceeds to the tools node. If rejected, execution goes to the rejection handler.
 
 ### The Rejection Handler: Closing the Loop
 
-**Key Insight:** This 3-line function is the secret sauce that transforms a one-shot system into an iterative refinement loop.
+This 3-line function is the secret sauce that transforms a one-shot system into an iterative refinement loop.
 
-This is where the loop's refinement mechanism lives:
+This is where the refinement mechanism lives:
 
 ```python
 def handle_rejection(state: AgentState):
@@ -225,15 +205,15 @@ def handle_rejection(state: AgentState):
     return {"messages": [feedback_message], "approved": False}
 ```
 
-It's straightforward: take the user's feedback and inject it back into the conversation as a `HumanMessage`.
+It's straightforward: take the user feedback and inject it back into the conversation as a `HumanMessage`.
 
-Now the agent sees its own tool call (in the previous `AIMessage`) plus the human's feedback (in this new `HumanMessage`).
+Now the agent sees its own tool call (in the previous `AIMessage`) plus the human feedback (in this new `HumanMessage`).
 
 On the next invocation, the agent regenerates with this full context. If the feedback was "Use DuckDuckGo instead of SERP," the agent will try that.
 
 If it still doesn't work, the human rejects again, feedback accumulates, and the loop continues.
 
-**Why this works:** We're not adding retry logic or error handling. We're simply injecting the human's feedback as a message. To the agent, it looks like a natural continuation of the conversation.
+**Why this works:** We are not adding retry logic or error handling. We are simply injecting the human feedback as a message. To the agent, it looks like a natural continuation of the conversation.
 
 ---
 
@@ -243,9 +223,9 @@ Let's trace a realistic scenario:
 
 ### Round 1: Initial Request
 
-**User:** "What's the latest news on AI safety?"
+**User:** "What is the latest news on AI safety?"
 
-**Agent Thinks:** I need to search the web. I'll use the SERP backend for quality results.
+**Agent Thinks:** I need to search the web. I'll use the SERP backend
 
 **Agent Tool Call:**
 ```json
@@ -259,15 +239,15 @@ Let's trace a realistic scenario:
 }
 ```
 
-**Human Reviews:** Hmm, SERP requires an API key I don't have configured.
+**Human Rejects:** SERP requires an API key I don't have one.
 
-**Human Rejects:** `approved=false, feedback="I don't have a SERP API key. Please use the free DuckDuckGo backend instead."`
+**Human Rejects:** `approved=false, feedback="SERP requires an API key I don't have one."`
 
 ### Round 2: Agent Corrects
 
 The rejection feedback is injected as a HumanMessage. The agent sees its previous attempt plus the correction request.
 
-**Agent Thinks:** Oh, I tried SERP but the user doesn't have that API key. They want DuckDuckGo. Let me try again.
+**Agent Thinks:** Oh, I tried SERP but the user doesn't have an API key. I will try DuckDuckGo backend.
 
 **Agent Tool Call:**
 ```json
@@ -295,8 +275,6 @@ The approved tool call executes, results come back as a ToolMessage, and the age
 
 If the human rejected the DuckDuckGo search too, the loop would continue indefinitely. In practice, users either provide better feedback or manually stop.
 
-**The key takeaway:** Notice how the agent naturally adapted to the constraint without needing special error handling or retry logic.
-
 ---
 
 ## State Management and Persistence
@@ -315,11 +293,11 @@ config = {"configurable": {"thread_id": "session_123"}}
 result = agent.invoke(initial_state, config=config)
 ```
 
-Here's what happens under the hood:
+What happens under the hood?
 
 **First invocation:** The graph executes until it hits the `interrupt()` call in the approval node. At that point, LangGraph saves a checkpoint of the current state (including all messages, the pending tool call, and graph position) and returns control to the caller with interrupt data.
 
-**Resume invocation:** When you call `invoke()` again with `Command(update=approval_response, resume=approval_response)` using the same thread ID, LangGraph loads the checkpoint, injects the approval data, and continues execution from the approval node. Only this time it skeps the interrupt line.
+**Resume invocation:** When you call `invoke()` again with `Command(resume=approval_response)` using the same thread ID, LangGraph loads the checkpoint, injects the approval data, and continues execution from the approval node. Only this time it skeps the interrupt line.
 
 The approval node completes, returning the approval status and feedback. Then the graph continues to either the tools node (if approved) or the rejected node (if rejected), both of which loop back to the agent node.
 
@@ -327,8 +305,6 @@ This checkpoint mechanism provides several guarantees:
 - **Conversation history is preserved** across approval and rejection cycles
 - **Tool calls are never executed twice** because execution only proceeds after human decision
 - **Multiple sessions can run in parallel** each with its own thread ID
-
-For the CLI in `cli_demo.py`, a single thread ID is used per session. For Streamlit in `streamlit_demo.py`, each session gets a unique thread ID. This allows the same agent instance to handle multiple concurrent users without state collision.
 
 ---
 
@@ -349,7 +325,7 @@ def process_interrupts(agent, result, config):
             approval_response = handle_tool_approval(interrupt_data)
             result.pop("__interrupt__")
             result = agent.invoke(
-                Command(update=approval_response, resume=approval_response),
+                Command(resume=approval_response),
                 config=config
             )
         else:
@@ -365,7 +341,7 @@ This handles multiple approval cycles in a single user turn.
 
 ### Streamlit Implementation
 
-The Streamlit UI in `streamlit_demo.py` handles approvals differently because it's stateful:
+The Streamlit UI in `streamlit_demo.py` handles approvals differently because it is stateful:
 
 ```python
 def handle_approval(approved: bool, feedback: str = ""):
@@ -384,7 +360,7 @@ def handle_approval(approved: bool, feedback: str = ""):
     
     try:
         result = st.session_state.agent.invoke(
-            Command(update=approval_response, resume=approval_response),
+            Command(resume=approval_response),
             config=st.session_state.agent_config
         )
         
@@ -401,9 +377,7 @@ When the user clicks "Approve" or "Reject" with feedback, this function resumes 
 
 If the agent generates another tool call, the UI interrupts again and displays another approval prompt. The loop happens within Streamlit's page renders and reruns.
 
-Both implementations achieve the same multi-turn loop, just adapted to their execution model:
-- **CLI:** blocks synchronously
-- **Streamlit:** rerenders asynchronously
+Both implementations achieve the same multi-turn loop, just adapted to their execution model.
 
 ---
 
@@ -425,17 +399,12 @@ The agent adjusts the plan with the correct model choice. You review and approve
 
 This is the same multi-turn loop we built for search, applied to a multi-step workflow. Each tool call search, plan review, implementation approval can be refined iteratively.
 
-### Content Creation and Editing
-
-A system generates article drafts, the human reviews them, provides editorial feedback, and the system refines.
-
-With multi-turn approval, you're not forced into "approve this draft or start over." You can say "make the intro more technical" or "add more code examples," and the agent regenerates with those constraints.
 
 ### API Orchestration and Planning
 
 An agent plans a sequence of API calls: fetch user data, update records, send notifications.
 
-You review the plan and realize it's missing error handling for the update step. Instead of rejecting and restarting, you provide feedback: "Add rollback logic if the update fails."
+You review the plan and realize it's missing error handling for the update step. You provide feedback: "Add rollback logic if the update fails."
 
 The agent replans with that constraint, you review again, and approve when it's safe.
 
@@ -443,15 +412,13 @@ The agent replans with that constraint, you review again, and approve when it's 
 
 The architecture stays identical across these domains. You change the tools and the domain logic, but the graph structure remains the same: interrupt, feedback injection, loop back to agent.
 
-This is the power of the pattern: it's simple enough to understand quickly but flexible enough to solve diverse problems.
-
 ---
 
 ## Conclusion: Iterative Refinement as a First-Class Pattern
 
 Single-interrupt HITL systems treat human involvement as a gating mechanism: pause, ask, proceed or abort.
 
-But real workflows are iterative. Users need to steer, adjust, and refine. With destructive operations like database deletions or API calls with side effects, iteration isn't just nice to have-it's non-negotiable.
+But real workflows are iterative. Users need to steer, adjust, and refine. With destructive operations like database deletions or API calls with side effects, iteration isn't just nice to have, it's non negotiable.
 
 The multi-turn edit loop pattern, enabled by a simple architectural change (rejection looping to agent), transforms HITL systems from binary gates into interactive refinement engines.
 
@@ -469,19 +436,17 @@ The implementation in this codebase demonstrates that you don't need elaborate s
 
 ### Why This Matters
 
-If you're building tool-based agents, consider this pattern early. It's a small architectural change with outsized UX benefits.
+If you're building tool-based agents or agents that connects to MCPs, consider this pattern. It's a small architectural change with outsized UX benefits.
 
 Whether you're generating code, extracting data, orchestrating APIs, or searching the web, iteration is essential.
-
-Make it a first-class feature of your graph.
 
 ---
 
 ## What's Next?
 
-**Try it yourself:** The complete code for this implementation is available in the repository. Clone it, run the CLI or Streamlit demos, and see multi-turn approval in action.
+**Try it yourself:** The complete code for this implementation is available in the repository. Clone it, create a .env file with your keys, run the CLI or Streamlit demos, and see multi-turn approval in action.
 
-**Share your experience:** What tool calls are you protecting against in your agents? Have you implemented similar HITL patterns? Share your approach in the comments, I'd love to hear what's working (or not working) for you.
+**Share your experience:** What tool calls are you protecting against in your agents? Share your approach in the comments, I would love to hear what's working (or not working) for you.
 
 If you found this helpful, follow me for more deep-dives into LangGraph patterns and agentic system architecture.
 
@@ -494,6 +459,6 @@ If you found this helpful, follow me for more deep-dives into LangGraph patterns
 - **Checkpointing**: Essential for multi-turn conversation persistence
 - **Tool Binding**: How LangChain agents bind tools to language models
 
-The code for this implementation is available in the repository. Explore `src/agent.py` for the graph definition, `src/nodes.py` for node implementations, and both `cli_demo.py` and `streamlit_demo.py` for UI-specific patterns.
+The code for this implementation is available in this repository: https://github.com/roihezkiyahu/HITL-demo. Explore `src/agent.py` for the graph definition, `src/nodes.py` for node implementations, and both `cli_demo.py` and `streamlit_demo.py` for UI specific patterns.
 
 Happy building.
